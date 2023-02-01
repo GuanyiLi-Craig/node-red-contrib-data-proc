@@ -6,6 +6,7 @@ module.exports = function(RED) {
     var childProcess = require("child_process")
     var util = require("util");
     var vm = require("vm");
+    var path = require("path")
 
     function getExecResult(query, con) {
         return new Promise(function(resolve, reject) {
@@ -20,8 +21,11 @@ module.exports = function(RED) {
 
     function getAllResult(query, con) {
         return new Promise(function(resolve, reject) {
+            console.log(con);
+            console.log(query);
             con.all(query, function (err, rows) {
                 if (err) {
+                    console.log(err);
                     return reject(err);
                 }
                 resolve(rows);
@@ -42,48 +46,52 @@ module.exports = function(RED) {
 
     function getGitCommit() {
         const proj = RED.settings.get('projects')
-        console.log(proj.activeProject)
-        const projectPath = path.join(RED.settings.userDir, 'projects', proj)
+        const projectPath = path.join(RED.settings.userDir, 'projects', proj.activeProject)
         const command = "cd " + projectPath.toString() + " && git rev-parse HEAD";
-        const commitHash = childProcess.spawn(command)
-        return commitHash.stdout.on("data", data => {
-            return data.replace(/^\s+|\s+$/g, "");
-        })
+        const commitHash = childProcess
+            .execSync(command)
+            .toString()
+            .trim();
+
+        return commitHash;
     }
 
     function getGitBranch() {
         const proj = RED.settings.get('projects')
-        console.log(proj.activeProject)
-        const projectPath = path.join(RED.settings.userDir, 'projects', proj)
+        const projectPath = path.join(RED.settings.userDir, 'projects', proj.activeProject)
+
         const command = "cd " + projectPath.toString() + " && git rev-parse --abbrev-ref HEAD";
-        const commitHash = childProcess.spawn(command)
-        return commitHash.stdout.on("data", data => {
-            return data.replace(/^\s+|\s+$/g, "");
-        })
+
+        const branchName = childProcess
+            .execSync(command)
+            .toString()
+            .trim();
+
+        const branchPath = 'projects' + "/" + proj.activeProject + "/" + branchName;
+
+        childProcess
+            .execSync("mkdir " + branchPath);
+
+        return branchPath;
     }
-/*
-    function DuckDBNode(n) {
-        RED.nodes.createNode(this,n);
 
-        this.dbname = n.db;
-        var node = this;
-
-        node.doConnect = function() {
-            if (node.db) { return; }
-            node.db = new duckdb.Database(node.dbname);
-            if (node.con) { return; }
-            node.con = node.db.connect();
-        }
-
-        node.on('close', function (done) {
-            if (node.tick) { clearTimeout(node.tick); }
-            if (node.con) { node.con.close(done()); }
-            if (node.db) { node.db.close(done()); }
-            else { done(); }
-        });
+    function doConnect(node) {
+        console.log("do connect")
+        if (node.db) { return; }
+        console.log(node.dbpath + "/" + node.dbname)
+        node.db = new duckdb.Database(node.dbpath + "/" + node.dbname);
+        if (node.con) { return; }
+        console.log("do connect db")
+        node.con = node.db.connect();
     }
-    RED.nodes.registerType("duckdb",DuckDBNode);
-*/
+
+    function doClose(node) {
+        console.log(node.con);
+        console.log(node.db);
+        if (node.tick) { clearTimeout(node.tick); }
+        //if (node.con) { node.con.close(); }
+        if (node.db) { node.db.close(); }
+    };
 
     function createVMOpt(node, kind) {
         var opt = {
@@ -111,20 +119,29 @@ module.exports = function(RED) {
         }
     }
 
-    function DuckdbFuncNode(n) {
+    function DuckdbProcNode(n) {
         RED.nodes.createNode(this,n);
         
         var node = this;
         node.name = n.name;
-        node.mydb = n.mydb;
-        node.duckdbfunc = n.duckdbfunc;
-        node.duckdbfuncbatchsize = n.duckdbfuncbatchsize;
+        node.dbname = getGitCommit();
+        node.dbpath = getGitBranch();
+
+        console.log("1")
+
+        node.duckdbproc = n.duckdbproc;
+        node.duckdbprocbatchsize = n.duckdbprocbatchsize;
+
         node.outputs = n.outputs;
         node.libs = n.libs || [];
 
-        node.mydbConfig = RED.nodes.getNode(this.mydb);
+        console.log("2")
 
-        if (RED.settings.duckdbFuncExternalModules === false && node.libs.length > 0) {
+        console.log("test connection");
+
+        doConnect(node);
+
+        if (RED.settings.duckdbProcExternalModules === false && node.libs.length > 0) {
             throw new Error(RED._("function.error.externalModuleNotAllowed"));
         }
 
@@ -135,7 +152,7 @@ module.exports = function(RED) {
                 "id:__node__.id,"+
                 "name:__node__.name" +
             "};\n"+
-                node.duckdbfunc+"\n"+
+                node.duckdbproc+"\n"+
             "})(msg);";
 
         node.topic = n.topic;
@@ -207,44 +224,45 @@ module.exports = function(RED) {
             processMessage(msg);
         });
 
+        node.on("close", function() {
+            doClose(node);
+        });
+
         Promise.all(moduleLoadPromises).then(() => {
             var context = vm.createContext(sandbox);
             try {
                 node.script = vm.createScript(functionText, createVMOpt(node, ""));
+                doConnect(node);
                 processMessage = async function (msg) {
                     context.msg = msg;
                     node.script.runInContext(context);
 
                     var inputMsg = context.msg;
-                    var batchSize = parseInt(node.duckdbfuncbatchsize);
+                    var batchSize = parseInt(node.duckdbprocbatchsize);
 
                     try {
-                        if (typeof inputMsg.beforeProc === 'string') {
-                            await getExecResult(inputMsg.beforeProc, node.mydbConfig.con);
-                        }
 
-                        if (typeof inputMsg.procQuery === 'string') {
-                            var offset = 0;
-                            do {
-                                var batchSQLQuery = inputMsg.procQuery + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
-                                var rows = await getAllResult(batchSQLQuery, node.mydbConfig.con);
-                                var batchResQuery = "";
-                                rows.forEach(async row => {
-                                    batchResQuery = batchResQuery + inputMsg.proc(row) + '\n';
-                                });
-                                await getExecResult(batchResQuery, node.mydbConfig.con);
-                                offset = offset + batchSize;
-                            } while (rows.length == batchSize)
-                        }
-
-                        if (typeof inputMsg.afterProc === 'string') {
-                            var response = await getAllResult(inputMsg.afterProc, node.mydbConfig.con);
-                            msg.payload = response;
-                        }
-                        msg.beforeProc = null;
-                        msg.afterProc = null;
-                        msg.procQuery = null;
-                        msg.proc = null;
+                        // create table if not exist
+                        var createTableQuery = "CREATE TABLE " + node.id + " (keys json, data json);" 
+                        console.log(createTableQuery);
+                        await getAllResult(createTableQuery, node.con);
+                        console.log("10");
+                        var offset = 0;
+                        do {
+                            var batchSQLQuery = "SELECT * FROM " + msg.nodeId + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
+                            var rows = await getAllResult(batchSQLQuery, node.con);
+                            var batchResQuery = "";
+                            rows.forEach(async row => {
+                                var res = inputMsg.proc(row)
+                                var insert = "INSERT INTO " + node.id + " VALUES(" + JSON.stringify(Object.values(res)).slice(1, -1).replaceAll('"', '\'') + ");";
+                                batchResQuery = batchResQuery + insert + '\n';
+                            });
+                            console.log("11");
+                            await getExecResult(batchResQuery, node.con);
+                            offset = offset + batchSize;
+                        } while (rows.length == batchSize)
+                        console.log("12");
+                        msg.nodeId = node.id;
                         node.send(msg);
                     } catch(err) {
                         node.error(err, msg);
@@ -258,162 +276,15 @@ module.exports = function(RED) {
             }
         }).catch(err => {
             node.error(RED._("function.error.externalModuleLoadError"));
+        }).finally(() => {
+            doClose(node);
         });
+        
     }
-    RED.nodes.registerType("duckdb func", DuckdbFuncNode, {
+    RED.nodes.registerType("duckdb proc", DuckdbProcNode, {
         dynamicModuleList: "libs",
         settings: {
-            duckdbFuncExternalModules: { value: true, exportable: true }
+            duckdbProcExternalModules: { value: true, exportable: true }
         }
     });
-
-
-    function ProcImport(n) {
-        RED.nodes.createNode(this,n);
-
-        this.mydb = n.mydb;
-        this.duckdbimport = n.duckdbimport||"msg.import";
-        this.tablename = n.importtablename;
-        this.duckdbfile = n.duckdbimportfile;
-        this.mydbConfig = RED.nodes.getNode(this.mydb);
-        var node = this;
-        
-        if (node.mydbConfig) {
-            node.mydbConfig.doConnect();
-            node.status({fill:"green",shape:"dot",text:this.mydbConfig.dbname});
-
-            var doImport = async function(msg) {
-                if (node.duckdbimport == "msg.import") {
-                    if (typeof msg.import === 'string') {
-                        try {
-                            var row = await getAllResult(msg.import, node.mydbConfig.con);
-                            msg.payload = row;
-                            node.send(msg);
-                        } catch(err) {
-                            node.error(err, msg);
-                        }
-                    }
-                    else {
-                        node.error("msg.import : the query is not defined as a string",msg);
-                        node.status({fill:"red",shape:"dot",text:"msg.sql error"});
-                    }
-                }
-                if (node.duckdbimport == "import-csv") {
-                    if (typeof node.duckdbfile === 'string' && typeof node.tablename === 'string') {
-                        if (node.duckdbfile.length > 0 && node.tablename.length > 0) {
-                            var csvImportSql = "CREATE TABLE " + node.tablename + " AS SELECT * FROM '" + node.duckdbfile + "';";
-                            try {
-                                var row = await getAllResult(csvImportSql, node.mydbConfig.con);
-                                msg.payload = row;
-                                node.send(msg);
-                            } catch(err) {
-                                node.error(err, msg);
-                            }
-                        }
-                    }
-                    else {
-                        node.error("SQL csv import config not set up",msg);
-                        node.status({fill:"red",shape:"dot",text:"SQL import config not set up"});
-                    }
-                }
-                if (node.duckdbimport == "import-parquet") {
-                    if (typeof node.duckdbfile === 'string' && typeof node.tablename === 'string') {
-                        if (node.duckdbfile.length > 0 && node.tablename.length > 0) {
-                            var parquetImportSql = "CREATE TABLE " + node.tablename + " AS SELECT * FROM read_parquet('" + node.duckdbfile + "');";
-                            try {
-                                var row = await getAllResult(parquetImportSql, node.mydbConfig.con);
-                                msg.payload = row;
-                                node.send(msg);
-                            } catch(err) {
-                                node.error(err, msg);
-                            }
-                        }
-                    }
-                    else {
-                        node.error("SQL parquet import config not set up",msg);
-                        node.status({fill:"red",shape:"dot",text:"SQL import config not set up"});
-                    }
-                }
-            }
-
-            node.on("input", function(msg) {
-                if (msg.hasOwnProperty("extension")) {
-                    node.mydbConfig.db.loadExtension(msg.extension, function(err) {
-                        if (err) { node.error(err,msg); }
-                        else { doImport(msg); }
-                    });
-                }
-                else { doImport(msg); }
-            });
-        }
-        else {
-            node.error("DuckDB database not configured");
-        }
-    }
-    RED.nodes.registerType("proc import",ProcImport);
-
-    function ProcExport(n) {
-        RED.nodes.createNode(this,n);
-
-        this.duckdbexport= n.duckdbexport||"msg.export";
-        this.tablename = n.exporttablename;
-        this.duckdbfile = n.duckdbexportfile;
-        this.mydbConfig = RED.nodes.getNode(this.mydb);
-        var node = this;
-        
-        if (node.mydbConfig) {
-            node.mydbConfig.doConnect();
-            node.status({fill:"green",shape:"dot",text:this.mydbConfig.dbname});
-
-            var doExport = async function(msg) {
-                if (node.duckdbexport == "msg.export") {
-                    if (typeof msg.export === 'string') {
-                        try {
-                            var row = await getAllResult(msg.export, node.mydbConfig.con);
-                            msg.payload = row;
-                            node.send(msg);
-                        } catch(err) {
-                            node.error(err, msg);
-                        }                        
-                    }
-                    else {
-                        node.error("msg.export : the query is not defined as a string",msg);
-                        node.status({fill:"red",shape:"dot",text:"msg.sql error"});
-                    }
-                }
-                if (node.duckdbexport == "export-parquet") {
-                    if (typeof node.duckdbfile === 'string' && typeof node.tablename === 'string') {
-                        if (node.duckdbfile.length > 0 && node.tablename.length > 0) {
-                            var parquetExportSql = "COPY (SELECT * FROM " + node.tablename + ") TO '" + node.duckdbfile + "' (FORMAT 'parquet');";
-                            try {
-                                var row = await getAllResult(parquetExportSql, node.mydbConfig.con);
-                                msg.payload = row;
-                                node.send(msg);
-                            } catch(err) {
-                                node.error(err, msg);
-                            }
-                        }
-                    }
-                    else {
-                        node.error("SQL parquet import config not set up",msg);
-                        node.status({fill:"red",shape:"dot",text:"SQL import config not set up"});
-                    }
-                }
-            }
-
-            node.on("input", function(msg) {
-                if (msg.hasOwnProperty("extension")) {
-                    node.mydbConfig.db.loadExtension(msg.extension, function(err) {
-                        if (err) { node.error(err,msg); }
-                        else { doExport(msg); }
-                    });
-                }
-                else { doExport(msg); }
-            });
-        }
-        else {
-            node.error("DuckDB database not configured");
-        }
-    }
-    RED.nodes.registerType("proc export", ProcExport);
 }
