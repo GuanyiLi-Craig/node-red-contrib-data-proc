@@ -21,11 +21,8 @@ module.exports = function(RED) {
 
     function getAllResult(query, con) {
         return new Promise(function(resolve, reject) {
-            console.log(con);
-            console.log(query);
             con.all(query, function (err, rows) {
                 if (err) {
-                    console.log(err);
                     return reject(err);
                 }
                 resolve(rows);
@@ -33,15 +30,16 @@ module.exports = function(RED) {
         });
     }
 
-    function getEachResult(query, con) {
-        return new Promise(function(resolve, reject) {
-            con.each(query, function (err, rows) {
-                if (err) {
-                    return reject(err);
-                }
-                resolve(rows);
-            });
-        });
+    function isGitDiff() {
+        const proj = RED.settings.get('projects')
+        const projectPath = path.join(RED.settings.userDir, 'projects', proj.activeProject)
+        const command = "cd " + projectPath.toString() + " && git diff";
+        const gitDiff = childProcess
+            .execSync(command)
+            .toString()
+            .trim();
+
+        return gitDiff !== '';
     }
 
     function getGitCommit() {
@@ -70,26 +68,20 @@ module.exports = function(RED) {
         const branchPath = 'projects' + "/" + proj.activeProject + "/" + branchName;
 
         childProcess
-            .execSync("mkdir " + branchPath);
+            .execSync("mkdir -p " + branchPath);
 
         return branchPath;
     }
 
     function doConnect(node) {
-        console.log("do connect")
         if (node.db) { return; }
-        console.log(node.dbpath + "/" + node.dbname)
         node.db = new duckdb.Database(node.dbpath + "/" + node.dbname);
         if (node.con) { return; }
-        console.log("do connect db")
         node.con = node.db.connect();
     }
 
     function doClose(node) {
-        console.log(node.con);
-        console.log(node.db);
         if (node.tick) { clearTimeout(node.tick); }
-        //if (node.con) { node.con.close(); }
         if (node.db) { node.db.close(); }
     };
 
@@ -127,17 +119,11 @@ module.exports = function(RED) {
         node.dbname = getGitCommit();
         node.dbpath = getGitBranch();
 
-        console.log("1")
-
         node.duckdbproc = n.duckdbproc;
         node.duckdbprocbatchsize = n.duckdbprocbatchsize;
 
         node.outputs = n.outputs;
         node.libs = n.libs || [];
-
-        console.log("2")
-
-        console.log("test connection");
 
         doConnect(node);
 
@@ -154,8 +140,6 @@ module.exports = function(RED) {
             "};\n"+
                 node.duckdbproc+"\n"+
             "})(msg);";
-
-        node.topic = n.topic;
 
         var sandbox = {
             console:console,
@@ -242,26 +226,29 @@ module.exports = function(RED) {
 
                     try {
 
-                        // create table if not exist
-                        var createTableQuery = "CREATE TABLE " + node.id + " (keys json, data json);" 
+                        // create <node.id>-head table if isGitDiff = true
+                        // create <node.id> table if isGitDiff = false and not exist
+                        var tableNameSuffix = "";
+                        if (isGitDiff()) {
+                            tableNameSuffix = '_head';
+                        }
+                        var createTableQuery = "CREATE TABLE IF NOT EXISTS " + node.id + tableNameSuffix + " (keys json PRIMARY KEY, data json);" 
                         console.log(createTableQuery);
                         await getAllResult(createTableQuery, node.con);
-                        console.log("10");
                         var offset = 0;
                         do {
-                            var batchSQLQuery = "SELECT * FROM " + msg.nodeId + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
+                            var batchSQLQuery = "SELECT * FROM " + msg.nodeId + tableNameSuffix + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
                             var rows = await getAllResult(batchSQLQuery, node.con);
                             var batchResQuery = "";
                             rows.forEach(async row => {
-                                var res = inputMsg.proc(row)
-                                var insert = "INSERT INTO " + node.id + " VALUES(" + JSON.stringify(Object.values(res)).slice(1, -1).replaceAll('"', '\'') + ");";
+                                var {keys, data} = inputMsg.proc(row)
+                                var insert = "INSERT INTO " + node.id + tableNameSuffix + " (keys, data) VALUES(" + keys + ", " + data + ") ON DUPLICATE KEY UPDATE keys = " + keys + ";";
                                 batchResQuery = batchResQuery + insert + '\n';
                             });
-                            console.log("11");
+
                             await getExecResult(batchResQuery, node.con);
                             offset = offset + batchSize;
                         } while (rows.length == batchSize)
-                        console.log("12");
                         msg.nodeId = node.id;
                         node.send(msg);
                     } catch(err) {
