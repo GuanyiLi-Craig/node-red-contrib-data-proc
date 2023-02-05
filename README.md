@@ -1,1 +1,1 @@
-# Node Red DuckDB proc Nodes
+# Node Red data proc Nodes
