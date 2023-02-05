@@ -1,4 +1,4 @@
-# Node Red DuckDB proc Nodes
+# Node Red Data Proc Nodes
 
 Data processing is the process of collecting, organizing, storing, and analyzing data to draw meaningful insights and make informed decisions. It is a crucial part of data science and analytics and involves a wide range of activities, from data cleaning and preparation to data visualization and reporting.
 
