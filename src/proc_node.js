@@ -7,8 +7,13 @@ module.exports = function(RED) {
     const util = require("util");
     const vm = require("vm");
     const path = require("path");
-    const csv = require('csvtojson')
-    const crypto = require('crypto');
+    const fs = require('fs');
+    const crypto = require("crypto");
+
+    function cleanTable(nodeId, con) {
+        var deleteAll = "DELETE FROM " + getTableName(nodeId);
+        getAllResult(deleteAll, con)
+    }
 
     function createTableSql(nodeId) {
         return "CREATE TABLE IF NOT EXISTS " + getTableName(nodeId) + " (keys json PRIMARY KEY, data json);" 
@@ -16,8 +21,8 @@ module.exports = function(RED) {
 
     function insertIntoTableSql(nodeId, keys, data) {
         return "INSERT INTO " + getTableName(nodeId) 
-             + " (keys, data) VALUES(" + keys + ", " + data 
-             + ") ON DUPLICATE KEY UPDATE keys = " + keys + ";";
+             + " (keys, data) VALUES('" + JSON.stringify(keys) + "', '" + JSON.stringify(data)
+             + "');";
     }
 
     function getExecResult(query, con) {
@@ -43,11 +48,29 @@ module.exports = function(RED) {
     }
  
     function readCSV(filePath){
-        return csv()
-        .fromFile(filePath)
-        .then((jsonObj) => {
-            return jsonObj
-        })
+        // Read CSV
+        var f = fs.readFileSync(filePath, {encoding: 'utf-8'}, 
+            function(err){console.log(err);});
+
+        // Split on row
+        f = f.split("\n");
+
+        // Get first row for column headers
+        const headers = f.shift().split(",");
+
+        var json = [];    
+        f.forEach(function(d){
+            // Loop through each row
+            var tmp = {}
+            var row = d.split(",")
+            for(var i = 0; i < headers.length; i++){
+                tmp[headers[i]] = row[i];
+            }
+            // Add object to list
+            json.push(tmp);
+        });
+        console.log(json);
+        return json;
     }
 
     function generateSHA512(object) {
@@ -180,13 +203,14 @@ module.exports = function(RED) {
 
         var doImport = async function(msg) {
             var dbCon = node.dbsys.con[node.dbsys.dbSys];
+
             if (node.dataimport == "import-csv") {
                 if (typeof node.datafile === 'string' && node.datafile.length > 0) {
                     var csvImportCreateTableSql = createTableSql(node.id);
-                    console.log(csvImportSql);
+                    console.log(csvImportCreateTableSql);
                     try {
                         await getAllResult(csvImportCreateTableSql, dbCon);
-
+                        await cleanTable(node.id, dbCon);
                         const csvJson = await readCSV(node.datafile);
                         
                         var batchInsertQuery = "";
@@ -198,6 +222,7 @@ module.exports = function(RED) {
                             };
                             const data = csvJson[ind];
                             var insert = insertIntoTableSql(node.id, keys, data);
+                            console.log(insert);
                             batchInsertQuery = batchInsertQuery + insert + '\n';
                             if(ind % 100 == 0) {
                                 await getExecResult(batchInsertQuery, dbCon);

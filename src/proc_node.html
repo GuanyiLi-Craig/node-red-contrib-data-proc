@@ -31,14 +31,14 @@
     </div>
     <div class="form-row">
         <label for=""><i class="fa fa-gear"></i> Import Type</label>
-        <select id="node-input-duckdbimport">
+        <select id="node-input-dataimport">
             <option value="import-csv">csv</option>
             <option value="import-parquet">parquet</option>
         </select>
     </div>
-    <div class="form-row" id="node-input-duckdb-import-file-row">
-        <label for="node-input-duckdbimportfile"><i class="fa fa-folder-open"></i> File Path</label>
-        <input type="text" id="node-input-duckdbimportfile">
+    <div class="form-row" id="node-input-data-import-file-row">
+        <label for="node-input-dataimportfile"><i class="fa fa-folder-open"></i> File Path</label>
+        <input type="text" id="node-input-dataimportfile">
     </div>
 </script>
 
@@ -47,8 +47,8 @@
         category: 'storage-input',
         color:"#e97b00",
         defaults: {
-            duckdbimport: {value:"import-csv",required:true},
-            duckdbimportfile: {value:""},
+            dataimport: {value:"import-csv",required:true},
+            dataimportfile: {value:""},
             dbsys: {type:"db sys", required:true},
             name: {value:""}
         },

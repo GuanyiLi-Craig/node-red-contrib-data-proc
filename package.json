@@ -4,7 +4,8 @@
     "description": "Node-red node for data process using embedded database.",
     "dependencies": {
         "duckdb": "^0.6.1",
-        "csvtojson": "^2.0.10"
+        "csvtojson": "^2.0.10",
+        "convert-csv-to-json": "^1.5.0"
     },
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1"
