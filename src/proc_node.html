@@ -1,4 +1,84 @@
-<script type="text/html" data-template-name="duckdb proc">
+<script type="text/html" data-template-name="db sys">
+    <div class="form-row">
+        <label for="node-config-input-dbsys"><i class="fa fa-database"></i> Database</label>
+        <select id="node-input-dbsys">
+            <option value="duckdb">Duck DB</option>
+        </select>
+    </div>
+</script>
+
+<script type="text/javascript">
+    RED.nodes.registerType('db sys',{
+        category: 'config',
+        defaults: {
+            dbSys: {value:"duckdb", required:true}
+        },
+        label: function() {
+            return this.dbSys;
+        }
+    });
+</script>
+
+
+<script type="text/html" data-template-name="proc import">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> <span data-i18n="node-red:common.label.name"></label>
+        <input type="text" id="node-input-name" data-i18n="[placeholder]node-red:common.label.name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-dbsys"><i class="fa fa-database"></i> Database</label>
+        <input type="text" id="node-input-dbsys">
+    </div>
+    <div class="form-row">
+        <label for=""><i class="fa fa-gear"></i> Import Type</label>
+        <select id="node-input-dataimport">
+            <option value="import-csv">csv</option>
+            <option value="import-parquet">parquet</option>
+        </select>
+    </div>
+    <div class="form-row" id="node-input-data-import-file-row">
+        <label for="node-input-dataimportfile"><i class="fa fa-folder-open"></i> File Path</label>
+        <input type="text" id="node-input-dataimportfile">
+    </div>
+</script>
+
+<script type="text/javascript">
+    RED.nodes.registerType('proc import',{
+        category: 'storage-input',
+        color:"#e97b00",
+        defaults: {
+            dataimport: {value:"import-csv",required:true},
+            dataimportfile: {value:""},
+            dbsys: {type:"db sys", required:true},
+            name: {value:""}
+        },
+        inputs:1,
+        outputs:1,
+        icon: "font-awesome/fa-upload",
+        label: function() {
+            return this.name||"proc import";
+        },
+        labelStyle: function() {
+            return this.name?"node_label_italic":"";
+        }
+    });
+</script>
+ 
+<script type="text/html" data-help-name="proc import">
+    <p>A node for importing csv or parquet file to duckdb. User can pass advanced sql import to msg.import as input. (<a href="https://duckdb.org/docs/data/overview">proc import</a>)
+    <p><strong>Import Type: </strong><br/>s
+        <ul>
+            <li><b>csv</b>: load csv file from local and create table given file path and table name. <a href="https://duckdb.org/docs/data/csv">proc import CSV</a></li>
+            <li><b>parquet</b>: load parquet file from local and create table given file path and table name. <a href="https://duckdb.org/docs/data/parquet">proc import Parquet</a></li>
+        </ul>
+    </p>
+    <p><strong>Table Name:</strong><br/>
+    Input the create table name if choose csv or parquet.</p>
+    <p><strong>File Path:</strong><br/>
+    Input the csv or parquet file path.</p>          
+</script>
+
+<script type="text/html" data-template-name="data proc">
     <style>
         .func-tabs-row {
             margin-bottom: 0;
@@ -58,7 +138,7 @@
         }
 
     </style>
-    <input type="hidden" id="node-input-duckdbproc">
+    <input type="hidden" id="node-input-dataproc">
     <input type="hidden" id="node-input-noerr">
 
     <div class="form-row">
@@ -66,13 +146,18 @@
         <div style="display: inline-block; width: calc(100% - 105px)"><input type="text" id="node-input-name" data-i18n="[placeholder]common.label.name"></div>
     </div>
 
-    <div class="form-row" id="node-input-duckdb-proc-batch-size-row">
-        <label for="node-input-duckdbprocbatchsize"><i class="fa fa-bars"></i> Batch Size:</label>
-        <input type="number" id="node-input-duckdbprocbatchsize" value="100">
+    <div class="form-row">
+        <label for="node-input-dbsys"><i class="fa fa-database"></i> Database</label>
+        <input type="text" id="node-input-dbsys">
+    </div>
+
+    <div class="form-row" id="node-input-data-proc-batch-size-row">
+        <label for="node-input-dataprocbatchsize"><i class="fa fa-bars"></i> Batch Size:</label>
+        <input type="number" id="node-input-dataprocbatchsize" value="100">
     </div>
 
     <div class="form-row node-text-editor-row" style="position:relative">
-        <div style="height: 220px; min-height:150px;" class="node-text-editor" id="node-input-duckdbproc-editor" ></div>
+        <div style="height: 220px; min-height:150px;" class="node-text-editor" id="node-input-dataproc-editor" ></div>
     </div>
 </script>
 
@@ -293,7 +378,7 @@
 
     function getLibsList() {
         var _libs = [];
-        if (RED.settings.duckdbProcExternalModules !== false) {
+        if (RED.settings.dataProcExternalModules !== false) {
             var libs = $("#node-input-libs-container").editableList("items");
             libs.each(function(i) {
                 var item = $(this);
@@ -315,14 +400,15 @@
         return _libs;
     }
 
-    RED.nodes.registerType('duckdb proc',{
+    RED.nodes.registerType('data proc',{
         color:"#e97b00",
         category: 'function',
         defaults: {
             name: {value:"_DEFAULT_"},
-            duckdbprocbatchsize: {value:100},
-            duckdbproc: {value:"msg.beforeProc = \"CREATE TABLE <table name>(...);\"\nmsg.procQuery = \"SELECT * FROM <prev table name>\";\nmsg.proc = function(row) {\n    // transform row from proc query\n    // return insert to new table\n    return \"INSERT INTO <table name> VALUES(\" + JSON.stringify(Object.values(row)).slice(1, -1).replaceAll(\'\"\', \'\\\'\') + \");\";\n}\n\nmsg.afterProc = \"SELECT * FROM <table name> LIMIT 10;\";"},
-            outputs: {value:1},
+            dbsys: {type:"db sys", required:true},
+            dataprocbatchsize: {value:100},
+            dataproc: {value:"msg.proc = function(row) {\n    // transform row from proc query\n    // return insert to new table\n    return \"INSERT INTO <table name> VALUES(\" + JSON.stringify(Object.values(row)).slice(1, -1).replaceAll(\'\"\', \'\\\'\') + \");\";\n}\n"},
+            outputs: {value:1}, 
             noerr: {value:0,required:true,
                     validate: function(v, opt) {
                         if (!v) {
@@ -362,7 +448,7 @@
         outputs:1,
         icon: "font-awesome/fa-bolt",
         label: function() {
-            return this.name||"duckdb proc";
+            return this.name||"data proc";
         },
         labelStyle: function() {
             return this.name?"node_label_italic":"";
@@ -404,7 +490,7 @@
                 return editor;
             }
 
-            this.editor = buildEditor('node-input-duckdbproc-editor', this.id + "/" + "editor", true, $("#node-input-duckdbproc").val(), undefined, that.libs || [], undefined, -1);
+            this.editor = buildEditor('node-input-dataproc-editor', this.id + "/" + "editor", true, $("#node-input-dataproc").val(), undefined, that.libs || [], undefined, -1);
 
             RED.library.create({
                 url:"functions", // where to get the data from
@@ -417,7 +503,7 @@
                 ext:"js"
             });
 
-            if (RED.settings.duckdbProcExternalModules !== false) {
+            if (RED.settings.dataProcExternalModules !== false) {
                 prepareLibraryConfig(that);
             }
         },
@@ -445,7 +531,7 @@
                 delete node[editorName];
                 $("#"+targetName).val(val);
             }
-            disposeEditor("editor","node-input-duckdbproc");
+            disposeEditor("editor","node-input-dataproc");
 
             $("#node-input-noerr").val(noerr);
             this.noerr = noerr;
@@ -468,7 +554,7 @@
             $("#dialog-form .node-text-editor").css("height",height+"px");
 
             var height = size.height;
-            $("#node-input-duckdbproc-editor").css("height", (height - 83)+"px");
+            $("#node-input-dataproc-editor").css("height", (height - 83)+"px");
             this.editor.resize();
 
             $("#node-input-libs-container").css("height", (height - 192)+"px");
@@ -483,7 +569,7 @@
 })();
 </script>
 
-<script type="text/html" data-help-name="duckdb proc">
+<script type="text/html" data-help-name="data proc">
     <p>This node provided an javascript code editor for transforming each row by function msg.proc and insert the processed data into database, also be able to output the result. This node also provided a template for user.
 
     <p><strong>Batch</strong> input defined the batch size of the process query. The value default to 100.</p>
