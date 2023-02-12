@@ -1,9 +1,10 @@
 {
-    "name": "node-red-contrib-duckdb-proc",
+    "name": "node-red-contrib-data-proc",
     "version": "0.0.1",
-    "description": "Node-red node for data process using DuckDB as database.",
+    "description": "Node-red node for data process using embedded database.",
     "dependencies": {
-        "duckdb": "^0.6.1"
+        "duckdb": "^0.6.1",
+        "csvtojson": "^2.0.10"
     },
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1"
@@ -12,26 +13,26 @@
     "keywords": [
         "node-red",
         "node-red-contrib",
-        "duckdb",
+        "database",
         "data process",
         "embedded database"
     ],
     "repository": {
         "type": "git",
-        "url": "https://github.com/GuanyiLi-Craig/node-red-contrib-duckdb-proc"
+        "url": "https://github.com/GuanyiLi-Craig/node-red-contrib-data-proc"
     },
     "node-red": {
         "nodes": {
-            "duckdb": "src/proc_node.js"
+            "dataproc": "src/proc_node.js"
         }
     },
     "author": {
         "name": "Craig Li",
         "email": "craig.guanyi.li@gmail.com",
-        "url": "https://github.com/GuanyiLi-Craig/node-red-contrib-duckdb-proc"
+        "url": "https://github.com/GuanyiLi-Craig/node-red-contrib-data-proc"
     },
     "readmeFilename": "README.md",
     "bugs": {
-        "url": "https://github.com/GuanyiLi-Craig/node-red-contrib-duckdb-proc"
+        "url": "https://github.com/GuanyiLi-Craig/node-red-contrib-data-proc"
     }
 }

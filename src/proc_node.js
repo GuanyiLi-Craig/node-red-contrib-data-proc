@@ -2,11 +2,23 @@ const { off } = require('process');
 
 module.exports = function(RED) {
     "use strict";
-    var duckdb= require('duckdb');
-    var childProcess = require("child_process")
-    var util = require("util");
-    var vm = require("vm");
-    var path = require("path")
+    const duckdb= require('duckdb');
+    const childProcess = require("child_process")
+    const util = require("util");
+    const vm = require("vm");
+    const path = require("path");
+    const csv = require('csvtojson')
+    const crypto = require('crypto');
+
+    function createTableSql(nodeId) {
+        return "CREATE TABLE IF NOT EXISTS " + getTableName(nodeId) + " (keys json PRIMARY KEY, data json);" 
+    }
+
+    function insertIntoTableSql(nodeId, keys, data) {
+        return "INSERT INTO " + getTableName(nodeId) 
+             + " (keys, data) VALUES(" + keys + ", " + data 
+             + ") ON DUPLICATE KEY UPDATE keys = " + keys + ";";
+    }
 
     function getExecResult(query, con) {
         return new Promise(function(resolve, reject) {
@@ -28,6 +40,19 @@ module.exports = function(RED) {
                 resolve(rows);
             });
         });
+    }
+ 
+    function readCSV(filePath){
+        return csv()
+        .fromFile(filePath)
+        .then((jsonObj) => {
+            return jsonObj
+        })
+    }
+
+    function generateSHA512(object) {
+        let sha512 = crypto.createHash('sha512').update(JSON.stringify(object)).digest('hex');
+        return sha512;
     }
 
     function isGitDiff() {
@@ -73,17 +98,14 @@ module.exports = function(RED) {
         return branchPath;
     }
 
-    function doConnect(node) {
-        if (node.db) { return; }
-        node.db = new duckdb.Database(node.dbpath + "/" + node.dbname);
-        if (node.con) { return; }
-        node.con = node.db.connect();
+    function getTableName(nodeId) {
+        var tableNameSuffix = "";
+        var tableNamePrefix = "_"
+        if (isGitDiff()) {
+            tableNameSuffix = '_head';
+        }
+        return tableNamePrefix + nodeId + tableNameSuffix;
     }
-
-    function doClose(node) {
-        if (node.tick) { clearTimeout(node.tick); }
-        if (node.db) { node.db.close(); }
-    };
 
     function createVMOpt(node, kind) {
         var opt = {
@@ -111,23 +133,137 @@ module.exports = function(RED) {
         }
     }
 
-    function DuckdbProcNode(n) {
+    function DBSysNode(n) {
+        RED.nodes.createNode(this,n);
+    
+        this.dbSys = n.dbSys;
+        this.db = {};
+        this.con = {};
+        this.dbname = getGitCommit();
+        this.dbpath = getGitBranch();
+        var node = this;
+
+
+        node.doConnect = function() {
+            if (node.db[node.dbSys]) { return; }
+            if (node.dbSys === "duckdb") {
+                node.db[node.dbSys] = new duckdb.Database(node.dbpath + "/" + node.dbname);
+            }
+            if (node.con[node.dbSys]) { return; }
+            if (node.dbSys === "duckdb") {
+                node.con[node.dbSys] = node.db[node.dbSys].connect();
+            }
+        }
+
+        node.on('close', function (done) {
+            if (node.tick) { clearTimeout(node.tick); }
+            if (node.con) { node.con[node.dbSys].close(done()); }
+            if (node.db) { node.db[node.dbSys].close(done()); }
+            else { done(); }
+        });
+    }
+    RED.nodes.registerType("db sys",DBSysNode);
+
+    function DataProcImport(n) {
+        RED.nodes.createNode(this,n);
+
+        this.dataimport = n.dataimport
+        this.datafile = n.dataimportfile;
+        this.dbsys = n.dbsys;
+
+        var node = this;
+
+        node.dbsys = RED.nodes.getNode(node.dbsys);
+        node.dbsys.doConnect();
+
+        node.status({fill:"green",shape:"dot"});
+
+        var doImport = async function(msg) {
+            var dbCon = node.dbsys.con[node.dbsys.dbSys];
+            if (node.dataimport == "import-csv") {
+                if (typeof node.datafile === 'string' && node.datafile.length > 0) {
+                    var csvImportCreateTableSql = createTableSql(node.id);
+                    console.log(csvImportSql);
+                    try {
+                        await getAllResult(csvImportCreateTableSql, dbCon);
+
+                        const csvJson = await readCSV(node.datafile);
+                        
+                        var batchInsertQuery = "";
+
+                        for(var ind = 0; ind<csvJson.length; ind++) {
+                            const hash = generateSHA512(csvJson[ind]);
+                            const keys = {
+                                "hash": hash
+                            };
+                            const data = csvJson[ind];
+                            var insert = insertIntoTableSql(node.id, keys, data);
+                            batchInsertQuery = batchInsertQuery + insert + '\n';
+                            if(ind % 100 == 0) {
+                                await getExecResult(batchInsertQuery, dbCon);
+                                batchInsertQuery = "";
+                            }
+                        }
+                        await getExecResult(batchInsertQuery, dbCon);
+                        msg.nodeId = node.id;
+                        node.send(msg);
+                    } catch(err) {
+                        node.error(err, msg);
+                    }
+                }
+                else {
+                    node.error("SQL csv import config not set up",msg);
+                    node.status({fill:"red",shape:"dot",text:"SQL import config not set up"});
+                }
+            }
+            if (node.dataimport == "import-parquet") {
+                if (typeof node.datafile === 'string' && node.datafile.length > 0) {
+                    var parquetImportSql = "CREATE TABLE " + tableName + " AS SELECT * FROM read_parquet('" + node.datafile + "');";
+                    try {
+                        var row = await getAllResult(parquetImportSql, dbCon);
+                        msg.nodeId = node.id;
+                        node.send(msg);
+                    } catch(err) {
+                        node.error(err, msg);
+                    }
+                }
+                else {
+                    node.error("SQL parquet import config not set up",msg);
+                    node.status({fill:"red",shape:"dot",text:"SQL import config not set up"});
+                }
+            }
+        }
+
+        node.on("input", function(msg) {
+            console.log(node);
+            if (msg.hasOwnProperty("extension")) {
+                node.db.loadExtension(msg.extension, function(err) {
+                    if (err) { node.error(err,msg); }
+                    else { doImport(msg); }
+                });
+            }
+            else { doImport(msg); }
+        });
+    }
+    RED.nodes.registerType("proc import",DataProcImport);
+
+    function DataProcNode(n) {
         RED.nodes.createNode(this,n);
         
         var node = this;
         node.name = n.name;
-        node.dbname = getGitCommit();
-        node.dbpath = getGitBranch();
-
-        node.duckdbproc = n.duckdbproc;
-        node.duckdbprocbatchsize = n.duckdbprocbatchsize;
+        node.dbsys = n.dbsys;
+        node.dbsys = RED.nodes.getNode(node.dbsys);
+        node.dataproc = n.dataproc;
+        node.dataprocbatchsize = n.dataprocbatchsize;
 
         node.outputs = n.outputs;
         node.libs = n.libs || [];
+        node.dbsys.doConnect();
 
-        doConnect(node);
+        console.log(node.dbsys);
 
-        if (RED.settings.duckdbProcExternalModules === false && node.libs.length > 0) {
+        if (RED.settings.dataProcExternalModules === false && node.libs.length > 0) {
             throw new Error(RED._("function.error.externalModuleNotAllowed"));
         }
 
@@ -138,7 +274,7 @@ module.exports = function(RED) {
                 "id:__node__.id,"+
                 "name:__node__.name" +
             "};\n"+
-                node.duckdbproc+"\n"+
+                node.dataproc+"\n"+
             "})(msg);";
 
         var sandbox = {
@@ -208,45 +344,39 @@ module.exports = function(RED) {
             processMessage(msg);
         });
 
-        node.on("close", function() {
-            doClose(node);
-        });
-
         Promise.all(moduleLoadPromises).then(() => {
             var context = vm.createContext(sandbox);
             try {
                 node.script = vm.createScript(functionText, createVMOpt(node, ""));
-                doConnect(node);
+                
                 processMessage = async function (msg) {
                     context.msg = msg;
                     node.script.runInContext(context);
 
                     var inputMsg = context.msg;
-                    var batchSize = parseInt(node.duckdbprocbatchsize);
+                    var batchSize = parseInt(node.dataprocbatchsize);
 
+                    var dbCon = node.dbsys.con[node.dbsys.dbSys];
                     try {
 
                         // create <node.id>-head table if isGitDiff = true
                         // create <node.id> table if isGitDiff = false and not exist
-                        var tableNameSuffix = "";
-                        if (isGitDiff()) {
-                            tableNameSuffix = '_head';
-                        }
-                        var createTableQuery = "CREATE TABLE IF NOT EXISTS " + node.id + tableNameSuffix + " (keys json PRIMARY KEY, data json);" 
-                        console.log(createTableQuery);
-                        await getAllResult(createTableQuery, node.con);
+
+                        var createTableQuery = createTableSql(node.id);
+
+                        await getAllResult(createTableQuery, dbCon);
                         var offset = 0;
                         do {
-                            var batchSQLQuery = "SELECT * FROM " + msg.nodeId + tableNameSuffix + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
-                            var rows = await getAllResult(batchSQLQuery, node.con);
+                            var batchSQLQuery = "SELECT * FROM " + getTableName(msg.nodeId) + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
+                            var rows = await getAllResult(batchSQLQuery, dbCon);
                             var batchResQuery = "";
                             rows.forEach(async row => {
                                 var {keys, data} = inputMsg.proc(row)
-                                var insert = "INSERT INTO " + node.id + tableNameSuffix + " (keys, data) VALUES(" + keys + ", " + data + ") ON DUPLICATE KEY UPDATE keys = " + keys + ";";
+                                var insert = insertIntoTableSql(node.id, keys, data);
                                 batchResQuery = batchResQuery + insert + '\n';
                             });
 
-                            await getExecResult(batchResQuery, node.con);
+                            await getExecResult(batchResQuery, dbCon);
                             offset = offset + batchSize;
                         } while (rows.length == batchSize)
                         msg.nodeId = node.id;
@@ -263,15 +393,13 @@ module.exports = function(RED) {
             }
         }).catch(err => {
             node.error(RED._("function.error.externalModuleLoadError"));
-        }).finally(() => {
-            doClose(node);
         });
         
     }
-    RED.nodes.registerType("duckdb proc", DuckdbProcNode, {
+    RED.nodes.registerType("data proc", DataProcNode, {
         dynamicModuleList: "libs",
         settings: {
-            duckdbProcExternalModules: { value: true, exportable: true }
+            dataProcExternalModules: { value: true, exportable: true }
         }
     });
 }
