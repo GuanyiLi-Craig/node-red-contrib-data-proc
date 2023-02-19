@@ -16,7 +16,9 @@ module.exports = function(RED) {
     }
 
     function createTableSql(nodeId) {
-        return "CREATE TABLE IF NOT EXISTS " + getTableName(nodeId) + " (keys json PRIMARY KEY, data json);" 
+        return "CREATE TABLE IF NOT EXISTS " + getTableName(nodeId) + " (keys json PRIMARY KEY, data json);\n" +
+              "INSTALL json;\n" + 
+              "LOAD json;";  
     }
 
     function insertIntoTableSql(nodeId, keys, data) {
@@ -69,8 +71,28 @@ module.exports = function(RED) {
             // Add object to list
             json.push(tmp);
         });
-        console.log(json);
         return json;
+    }
+
+
+    function writeLinesToFile(lines, fileName) {
+        fs.writeFile(fileName, lines, err => {
+            if (err) {
+                console.error(err);
+                return;
+            }
+            console.log("File Saved!");
+        });
+    }
+
+    function appendLinesToFile(lines, fileName) {
+        fs.appendFile(fileName, lines, err => {
+            if (err)  {
+                console.error(err);
+                return;
+            }
+            console.log('The lines have been appended to file!')
+        });    
     }
 
     function generateSHA512(object) {
@@ -207,9 +229,8 @@ module.exports = function(RED) {
             if (node.dataimport == "import-csv") {
                 if (typeof node.datafile === 'string' && node.datafile.length > 0) {
                     var csvImportCreateTableSql = createTableSql(node.id);
-                    console.log(csvImportCreateTableSql);
                     try {
-                        await getAllResult(csvImportCreateTableSql, dbCon);
+                        await getExecResult(csvImportCreateTableSql, dbCon);
                         await cleanTable(node.id, dbCon);
                         const csvJson = await readCSV(node.datafile);
                         
@@ -221,9 +242,10 @@ module.exports = function(RED) {
                                 "hash": hash
                             };
                             const data = csvJson[ind];
+
                             var insert = insertIntoTableSql(node.id, keys, data);
-                            console.log(insert);
                             batchInsertQuery = batchInsertQuery + insert + '\n';
+
                             if(ind % 100 == 0) {
                                 await getExecResult(batchInsertQuery, dbCon);
                                 batchInsertQuery = "";
@@ -260,7 +282,6 @@ module.exports = function(RED) {
         }
 
         node.on("input", function(msg) {
-            console.log(node);
             if (msg.hasOwnProperty("extension")) {
                 node.db.loadExtension(msg.extension, function(err) {
                     if (err) { node.error(err,msg); }
@@ -271,6 +292,96 @@ module.exports = function(RED) {
         });
     }
     RED.nodes.registerType("proc import",DataProcImport);
+
+
+    function DataProcExport(n) {
+        RED.nodes.createNode(this,n);
+
+        this.mydb = n.mydb;
+        this.dataexport= n.dataexport || "export-db-table";
+        this.tablename = n.exporttablename;
+        this.datafile = n.dataexportfile;
+        this.dbsys = n.dbsys;
+
+        var node = this;
+
+        node.dbsys = RED.nodes.getNode(node.dbsys);
+        node.dbsys.doConnect();
+
+        node.status({fill:"green",shape:"dot"});
+
+        var doExport = async function(msg) {
+            var dbCon = node.dbsys.con[node.dbsys.dbSys];
+            try {
+                // convert to csv and save to temp
+                var offset = 0;
+                var batchSize = 100;
+                var fileName = node.id + "_temp.csv";
+                var index = 0;
+                do {
+                    var batchSQLQuery = "SELECT * FROM " + getTableName(msg.nodeId) + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
+                    var rows = await getAllResult(batchSQLQuery, dbCon);
+                    var csvRows = "";
+                    
+                    rows.forEach(async row => {
+                        var {keys, data} = row;
+                        if (index == 0) {
+                            csvRows = Object.keys(JSON.parse(data)).join(',') + "\n";
+                        }
+                        index++;
+                        csvRows = csvRows + Object.values(JSON.parse(data)).join(',') + "\n";
+                    });
+                    if (offset == 0) {
+                        writeLinesToFile(csvRows, fileName);
+                    } else {
+                        appendLinesToFile(csvRows, fileName);
+                    }
+
+                    offset = offset + batchSize;
+                } while (rows.length == batchSize)
+                
+                if (node.dataexport == "export-parquet") {
+                    if (typeof node.datafile === 'string') {
+                        // load csv to a temp database
+                        var createTempTable = "CREATE TEMP TABLE temp AS SELECT * FROM '" + fileName + "';";
+                        getAllResult(createTempTable, dbCon);
+                        console.log(node);
+                        // export to parquet
+                        if (node.datafile.length > 0 && node.tablename.length > 0) {
+                            var parquetExportSql = "COPY (SELECT * FROM temp) TO '" + node.datafile + "' FORMAT 'parquet');";
+                            console.log(parquetExportSql);
+
+                            var row = await getAllResult(parquetExportSql, dbCon);
+                            msg.nodeId = undefined;
+                            msg.payload = row;
+                            node.send(msg);
+
+                        }
+
+                        var dropTempTable= "DROP TABLE temp;";
+                        getAllResult(dropTempTable, dbCon);
+                    }
+                    else {
+                        node.error("SQL parquet import config not set up",msg);
+                        node.status({fill:"red",shape:"dot",text:"SQL import config not set up"});
+                    }
+                }
+            } catch(err) {
+                node.error(err, msg);
+            }
+        }
+
+        node.on("input", function(msg) {
+            if (msg.hasOwnProperty("extension")) {
+                node.mydbConfig.db.loadExtension(msg.extension, function(err) {
+                    if (err) { node.error(err,msg); }
+                    else { doExport(msg); }
+                });
+            }
+            else { doExport(msg); }
+        });
+    }
+    RED.nodes.registerType("proc export",DataProcExport);
 
     function DataProcNode(n) {
         RED.nodes.createNode(this,n);
@@ -285,8 +396,6 @@ module.exports = function(RED) {
         node.outputs = n.outputs;
         node.libs = n.libs || [];
         node.dbsys.doConnect();
-
-        console.log(node.dbsys);
 
         if (RED.settings.dataProcExternalModules === false && node.libs.length > 0) {
             throw new Error(RED._("function.error.externalModuleNotAllowed"));
@@ -389,16 +498,21 @@ module.exports = function(RED) {
 
                         var createTableQuery = createTableSql(node.id);
 
-                        await getAllResult(createTableQuery, dbCon);
+                        await getExecResult(createTableQuery, dbCon);
+                        await cleanTable(node.id, dbCon);
                         var offset = 0;
                         do {
                             var batchSQLQuery = "SELECT * FROM " + getTableName(msg.nodeId) + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
                             var rows = await getAllResult(batchSQLQuery, dbCon);
                             var batchResQuery = "";
+                            
                             rows.forEach(async row => {
-                                var {keys, data} = inputMsg.proc(row)
-                                var insert = insertIntoTableSql(node.id, keys, data);
-                                batchResQuery = batchResQuery + insert + '\n';
+                                var {keys, data} = row;
+                                var result = inputMsg.proc(JSON.parse(keys), JSON.parse(data));
+                                if (result.keys !== undefined) {
+                                    var insert = insertIntoTableSql(node.id, result.keys, result.data);
+                                    batchResQuery = batchResQuery + insert + '\n';
+                                }
                             });
 
                             await getExecResult(batchResQuery, dbCon);
