@@ -1,5 +1,3 @@
-const { off } = require('process');
-
 module.exports = function(RED) {
     "use strict";
     const duckdb= require('duckdb');
@@ -318,9 +316,10 @@ module.exports = function(RED) {
                 var batchSize = 100;
                 var fileName = node.id + "_temp.csv";
                 var index = 0;
+                var rows = [];
                 do {
                     var batchSQLQuery = "SELECT * FROM " + getTableName(msg.nodeId) + " LIMIT " + batchSize.toString() + " OFFSET " + offset.toString() + ";";
-                    var rows = await getAllResult(batchSQLQuery, dbCon);
+                    rows = await getAllResult(batchSQLQuery, dbCon);
                     var csvRows = "";
                     
                     rows.forEach(async row => {
@@ -339,23 +338,20 @@ module.exports = function(RED) {
 
                     offset = offset + batchSize;
                 } while (rows.length == batchSize)
-                
+
                 if (node.dataexport == "export-parquet") {
                     if (typeof node.datafile === 'string') {
                         // load csv to a temp database
-                        var createTempTable = "CREATE TEMP TABLE temp AS SELECT * FROM '" + fileName + "';";
-                        getAllResult(createTempTable, dbCon);
-                        console.log(node);
+                        var createTempTable = "CREATE TEMP TABLE temp AS SELECT * FROM read_csv_auto('" + fileName + "');";
+                        await getAllResult(createTempTable, dbCon);
                         // export to parquet
-                        if (node.datafile.length > 0 && node.tablename.length > 0) {
-                            var parquetExportSql = "COPY (SELECT * FROM temp) TO '" + node.datafile + "' FORMAT 'parquet');";
-                            console.log(parquetExportSql);
+                        if (node.datafile.length > 0) {
+                            var parquetExportSql = "COPY (SELECT * FROM temp) TO '" + node.datafile + "' (FORMAT 'parquet');";
 
                             var row = await getAllResult(parquetExportSql, dbCon);
                             msg.nodeId = undefined;
                             msg.payload = row;
                             node.send(msg);
-
                         }
 
                         var dropTempTable= "DROP TABLE temp;";
