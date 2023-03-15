@@ -250,6 +250,9 @@ module.exports = function(RED) {
                             }
                         }
                         await getExecResult(batchInsertQuery, dbCon);
+                        var sampleSql = "SELECT * FROM " + getTableName(node.id) + " LIMIT 10;";
+                        var rows = await getAllResult(sampleSql, dbCon);
+                        msg.sample = rows;
                         msg.nodeId = node.id;
                         node.send(msg);
                     } catch(err) {
@@ -489,9 +492,6 @@ module.exports = function(RED) {
                     var dbCon = node.dbsys.con[node.dbsys.dbSys];
                     try {
 
-                        // create <node.id>-head table if isGitDiff = true
-                        // create <node.id> table if isGitDiff = false and not exist
-
                         var createTableQuery = createTableSql(node.id);
 
                         await getExecResult(createTableQuery, dbCon);
@@ -514,7 +514,10 @@ module.exports = function(RED) {
                             await getExecResult(batchResQuery, dbCon);
                             offset = offset + batchSize;
                         } while (rows.length == batchSize)
+                        var sampleSql = "SELECT * FROM " + getTableName(node.id) + " LIMIT 10;";
+                        var rows = await getAllResult(sampleSql, dbCon);
                         msg.nodeId = node.id;
+                        msg.sample = rows;
                         node.send(msg);
                     } catch(err) {
                         node.error(err, msg);
